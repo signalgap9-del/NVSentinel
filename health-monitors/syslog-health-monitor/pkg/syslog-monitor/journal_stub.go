@@ -170,7 +170,7 @@ func (j *StubJournal) SeekHead() error {
 		return errors.New(JOURNAL_CLOSED_ERROR_MESSAGE)
 	}
 
-	j.currentPosition = 0
+	j.currentPosition = -1
 
 	return nil
 }

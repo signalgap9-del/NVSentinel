@@ -243,7 +243,7 @@ func (j *MockJournal) SeekHead() error {
 		return errors.New(JOURNAL_CLOSED_ERROR)
 	}
 
-	j.CurrentPosition = 0
+	j.CurrentPosition = -1
 
 	return nil
 }
