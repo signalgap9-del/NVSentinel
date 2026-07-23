@@ -923,7 +923,9 @@ func TestNoBootChange_StillSeeksTail(t *testing.T) {
 	mockFactory.DefaultJournal = &MockJournal{TestBootID: "boot-1", CurrentPosition: -1}
 
 	// State with same boot ID as current (no reboot detected).
-	// On non-Linux, fetchCurrentBootID returns "" so we use "" here.
+	// Empty BootID simulates first install (no previous state). The
+	// postRebootInit flag is only set when oldBootID != "", so this
+	// correctly exercises the SeekTail path on any platform.
 	initialState := syslogMonitorState{
 		Version:          stateFileVersion,
 		BootID:           "",

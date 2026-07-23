@@ -442,8 +442,12 @@ func (sm *SyslogMonitor) handleBootIDChange(oldBootID, newBootID string) error {
 
 	// Signal that the next journal scan must start from the beginning of
 	// the current boot rather than the tail, so entries emitted between
-	// boot and monitor startup are not missed.
-	sm.postRebootInit = true
+	// boot and monitor startup are not missed. Only set when there was a
+	// previous boot (oldBootID != ""); on first install (no state file)
+	// the normal tail-initialization path is correct.
+	if oldBootID != "" {
+		sm.postRebootInit = true
+	}
 
 	sm.pendingPostRebootBootID = newBootID
 
