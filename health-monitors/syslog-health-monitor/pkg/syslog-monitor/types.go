@@ -86,6 +86,12 @@ type SyslogMonitor struct {
 	// after PC returns. Single-goroutine access (Run() is serialised by
 	// main's ticker loop), so no mutex is required.
 	pendingPostRebootBootID string
+	// postRebootInit is true after handleBootIDChange clears cursors and
+	// before the first successful journal scan on the new boot. While set,
+	// processJournalEntries seeks to the beginning of the current boot's
+	// journal instead of the tail, so entries emitted between boot and
+	// monitor startup are not missed. Single-goroutine access.
+	postRebootInit bool
 }
 
 // CheckDefinition matches the structure of each check in the YAML config file

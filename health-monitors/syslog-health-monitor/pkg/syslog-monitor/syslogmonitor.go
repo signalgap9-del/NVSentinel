@@ -432,6 +432,11 @@ func (sm *SyslogMonitor) handleBootIDChange(oldBootID, newBootID string) error {
 		delete(sm.checkLastCursors, checkName)
 	}
 
+	// Signal that the next journal scan must start from the beginning of
+	// the current boot rather than the tail, so entries emitted between
+	// boot and monitor startup are not missed.
+	sm.postRebootInit = true
+
 	sm.pendingPostRebootBootID = newBootID
 
 	return sm.tryFlushPostRebootBootIDClear()
