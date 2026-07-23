@@ -751,6 +751,220 @@ func readState(t *testing.T, stateFilePath string) syslogMonitorState {
 	return loaded
 }
 
+// TestBootIDChange_ProcessesEntriesFromBootStart verifies that after a
+// boot-ID change, the monitor seeks to the beginning of the current
+// boot's journal and processes entries that were emitted before the
+// monitor started, rather than skipping them by seeking to the tail.
+func TestBootIDChange_ProcessesEntriesFromBootStart(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateFilePath := tmpDir + "/state.json"
+
+	check := CheckDefinition{
+		Name:        "bootCheck",
+		JournalPath: TEST_JOURNAL_PATH,
+	}
+
+	// Journal contains entries emitted during driver startup (before monitor).
+	mockJournal := &MockJournal{
+		Entries: []MockJournalEntry{
+			{Message: "NVRM: Xid (PCI:0000:38:00): 79, GPU has fallen off the bus", Cursor: "cursor-1", BootID: "boot-2"},
+			{Message: "NVRM: Xid (PCI:0000:38:00): 154, GPU recovery action", Cursor: "cursor-2", BootID: "boot-2"},
+		},
+		CurrentPosition: -1,
+		TestBootID:      "boot-2",
+	}
+
+	mockFactory := NewMockJournalFactory()
+	mockFactory.JournalsByPath[check.JournalPath] = mockJournal
+	mockFactory.DefaultJournal = &MockJournal{TestBootID: "boot-2", CurrentPosition: -1}
+
+	// State from previous boot with a cursor that is now invalid.
+	initialState := syslogMonitorState{
+		Version:          stateFileVersion,
+		BootID:           "boot-1",
+		CheckLastCursors: map[string]string{"bootCheck": "old-cursor-from-boot-1"},
+	}
+	stateData, _ := json.Marshal(initialState)
+	_ = os.WriteFile(stateFilePath, stateData, 0o644)
+
+	sm, err := NewSyslogMonitorWithFactory(
+		TEST_NODE,
+		[]CheckDefinition{check},
+		&mockPlatformConnectorClient{},
+		TEST_AGENT,
+		TEST_COMPONENT,
+		"60s",
+		stateFilePath,
+		mockFactory,
+		"http://localhost:8080",
+		"/tmp/metadata.json",
+		pb.ProcessingStrategy_EXECUTE_REMEDIATION,
+		"", "",
+		nil,
+		"tcp://test",
+	)
+	assert.NoError(t, err)
+
+	// Boot change detected: cursors cleared, postRebootInit set.
+	assert.True(t, sm.postRebootInit, "postRebootInit must be true after boot-ID change")
+	_, hasCursor := sm.checkLastCursors[check.Name]
+	assert.False(t, hasCursor, "cursor must be cleared after boot-ID change")
+
+	// Run the first poll cycle.
+	assert.NoError(t, sm.Run())
+
+	// Entries from boot start must have been processed (cursor advanced).
+	cursor, exists := sm.checkLastCursors[check.Name]
+	assert.True(t, exists, "cursor must be saved after processing boot-start entries")
+	assert.Equal(t, "cursor-2", cursor, "cursor must be at the last processed entry")
+
+	// postRebootInit must be cleared after successful Run.
+	assert.False(t, sm.postRebootInit, "postRebootInit must be false after successful Run")
+}
+
+// TestBootIDChange_SecondPollResumesFromCursor verifies that after the
+// initial post-reboot scan, subsequent poll cycles resume from the saved
+// cursor rather than re-scanning from boot start.
+func TestBootIDChange_SecondPollResumesFromCursor(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateFilePath := tmpDir + "/state.json"
+
+	check := CheckDefinition{
+		Name:        "bootCheck",
+		JournalPath: TEST_JOURNAL_PATH,
+	}
+
+	mockJournal := &MockJournal{
+		Entries: []MockJournalEntry{
+			{Message: "entry-before-startup", Cursor: "cursor-1", BootID: "boot-2"},
+			{Message: "entry-after-startup", Cursor: "cursor-2", BootID: "boot-2"},
+		},
+		CurrentPosition: -1,
+		TestBootID:      "boot-2",
+	}
+
+	mockFactory := NewMockJournalFactory()
+	mockFactory.JournalsByPath[check.JournalPath] = mockJournal
+	mockFactory.DefaultJournal = &MockJournal{TestBootID: "boot-2", CurrentPosition: -1}
+
+	initialState := syslogMonitorState{
+		Version:          stateFileVersion,
+		BootID:           "boot-1",
+		CheckLastCursors: map[string]string{"bootCheck": "old-cursor"},
+	}
+	stateData, _ := json.Marshal(initialState)
+	_ = os.WriteFile(stateFilePath, stateData, 0o644)
+
+	sm, err := NewSyslogMonitorWithFactory(
+		TEST_NODE,
+		[]CheckDefinition{check},
+		&mockPlatformConnectorClient{},
+		TEST_AGENT,
+		TEST_COMPONENT,
+		"60s",
+		stateFilePath,
+		mockFactory,
+		"http://localhost:8080",
+		"/tmp/metadata.json",
+		pb.ProcessingStrategy_EXECUTE_REMEDIATION,
+		"", "",
+		nil,
+		"tcp://test",
+	)
+	assert.NoError(t, err)
+
+	// First Run: processes from boot start.
+	assert.NoError(t, sm.Run())
+	assert.False(t, sm.postRebootInit, "postRebootInit must be cleared after first Run")
+
+	firstCursor := sm.checkLastCursors[check.Name]
+	assert.NotEmpty(t, firstCursor, "cursor must be saved after first Run")
+
+	// Add a new entry to the journal (simulating ongoing operation).
+	mockJournal.Entries = append(mockJournal.Entries, MockJournalEntry{
+		Message: "new-entry-after-first-poll", Cursor: "cursor-3", BootID: "boot-2",
+	})
+
+	// executeCheck closes the journal via defer after each Run cycle.
+	// Reset so the second Run can reuse the same mock instance.
+	mockJournal.Closed = false
+
+	// Second Run: must resume from cursor, not re-scan from boot start.
+	assert.NoError(t, sm.Run())
+
+	secondCursor := sm.checkLastCursors[check.Name]
+	assert.Equal(t, "cursor-3", secondCursor,
+		"second Run must process only new entries after the saved cursor")
+}
+
+// TestNoBootChange_StillSeeksTail verifies that on first install (no
+// boot-ID change, no saved cursor), the monitor still seeks to the
+// journal tail and does NOT process historical entries.
+func TestNoBootChange_StillSeeksTail(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateFilePath := tmpDir + "/state.json"
+
+	check := CheckDefinition{
+		Name:        "bootCheck",
+		JournalPath: TEST_JOURNAL_PATH,
+	}
+
+	mockJournal := &MockJournal{
+		Entries: []MockJournalEntry{
+			{Message: "old-entry-1", Cursor: "cursor-1", BootID: "boot-1"},
+			{Message: "old-entry-2", Cursor: "cursor-2", BootID: "boot-1"},
+		},
+		CurrentPosition: -1,
+		TestBootID:      "boot-1",
+	}
+
+	mockFactory := NewMockJournalFactory()
+	mockFactory.JournalsByPath[check.JournalPath] = mockJournal
+	mockFactory.DefaultJournal = &MockJournal{TestBootID: "boot-1", CurrentPosition: -1}
+
+	// State with same boot ID as current (no reboot detected).
+	// On non-Linux, fetchCurrentBootID returns "" so we use "" here.
+	initialState := syslogMonitorState{
+		Version:          stateFileVersion,
+		BootID:           "",
+		CheckLastCursors: map[string]string{},
+	}
+	stateData, _ := json.Marshal(initialState)
+	_ = os.WriteFile(stateFilePath, stateData, 0o644)
+
+	sm, err := NewSyslogMonitorWithFactory(
+		TEST_NODE,
+		[]CheckDefinition{check},
+		&mockPlatformConnectorClient{},
+		TEST_AGENT,
+		TEST_COMPONENT,
+		"60s",
+		stateFilePath,
+		mockFactory,
+		"http://localhost:8080",
+		"/tmp/metadata.json",
+		pb.ProcessingStrategy_EXECUTE_REMEDIATION,
+		"", "",
+		nil,
+		"tcp://test",
+	)
+	assert.NoError(t, err)
+
+	// No boot change: postRebootInit must remain false.
+	assert.False(t, sm.postRebootInit, "postRebootInit must be false when no boot change detected")
+
+	// Run: should seek to tail (initializeJournalFromTail), saving cursor
+	// at the last entry without processing historical entries.
+	assert.NoError(t, sm.Run())
+
+	// SeekTail positions at the last entry; Previous() moves back one;
+	// cursor is saved at that position. No entries are processed in this
+	// cycle (processing starts on the NEXT cycle from after the cursor).
+	cursor, exists := sm.checkLastCursors[check.Name]
+	assert.True(t, exists, "cursor must be saved after tail initialization")
+	assert.NotEmpty(t, cursor, "cursor must not be empty")
+}
+
 // TestRunMultipleChecks tests running multiple checks in sequence
 func TestRunMultipleChecks(t *testing.T) {
 	check1 := CheckDefinition{

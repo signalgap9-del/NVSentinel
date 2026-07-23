@@ -275,6 +275,7 @@ func (sm *SyslogMonitor) Run() error {
 	// subsequent cycles use normal cursor-based processing.
 	if sm.postRebootInit {
 		sm.postRebootInit = false
+
 		slog.Info("Post-reboot boot-start scan completed; resuming cursor-based processing")
 	}
 
