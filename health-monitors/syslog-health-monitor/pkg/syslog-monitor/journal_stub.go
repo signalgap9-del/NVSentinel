@@ -164,6 +164,17 @@ func (j *StubJournal) SeekCursor(cursor string) error {
 	return nil
 }
 
+// SeekHead seeks to the beginning of the journal
+func (j *StubJournal) SeekHead() error {
+	if j.closed {
+		return errors.New(JOURNAL_CLOSED_ERROR_MESSAGE)
+	}
+
+	j.currentPosition = 0
+
+	return nil
+}
+
 // SeekTail seeks to the end of the journal
 // For stub journal, we always set position to -1 (before start) so that
 // Previous() returns EOF and the cursor is saved as "-1", ensuring ALL messages

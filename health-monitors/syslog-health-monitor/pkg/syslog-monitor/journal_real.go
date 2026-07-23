@@ -69,6 +69,11 @@ func (j *RealJournal) SeekCursor(cursor string) error {
 	return j.journal.SeekCursor(cursor)
 }
 
+// SeekHead seeks to the beginning of the journal
+func (j *RealJournal) SeekHead() error {
+	return j.journal.SeekHead()
+}
+
 // SeekTail seeks to the end of the journal
 func (j *RealJournal) SeekTail() error {
 	return j.journal.SeekTail()

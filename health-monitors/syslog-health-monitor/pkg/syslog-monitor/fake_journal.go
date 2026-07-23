@@ -205,6 +205,36 @@ func (j *FakeJournal) SeekCursor(cursor string) error {
 	return fmt.Errorf("cursor not found: %s", cursor)
 }
 
+// SeekHead implements the Journal interface
+func (j *FakeJournal) SeekHead() error {
+	// Allow even if closed for test purposes
+	if len(j.Entries) == 0 {
+		j.CurrentPosition = -1
+
+		return nil
+	}
+
+	if len(j.Matches) == 0 {
+		j.CurrentPosition = 0
+
+		return nil
+	}
+
+	// Find the first entry that matches all filters
+	for i := 0; i < len(j.Entries); i++ {
+		if j.matchesFilters(j.Entries[i]) {
+			j.CurrentPosition = i
+
+			return nil
+		}
+	}
+
+	// No matches
+	j.CurrentPosition = len(j.Entries)
+
+	return nil
+}
+
 // SeekTail implements the Journal interface
 func (j *FakeJournal) SeekTail() error {
 	// Allow even if closed for test purposes

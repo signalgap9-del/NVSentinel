@@ -237,6 +237,17 @@ func (j *MockJournal) SeekCursor(cursor string) error {
 	return fmt.Errorf("cursor not found: %s", cursor)
 }
 
+// SeekHead seeks to the beginning of the journal
+func (j *MockJournal) SeekHead() error {
+	if j.Closed {
+		return errors.New(JOURNAL_CLOSED_ERROR)
+	}
+
+	j.CurrentPosition = 0
+
+	return nil
+}
+
 // SeekTail seeks to the end of the journal
 func (j *MockJournal) SeekTail() error {
 	if j.Closed {

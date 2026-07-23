@@ -42,6 +42,9 @@ type Journal interface {
 	// SeekCursor seeks to a position indicated by a cursor
 	SeekCursor(cursor string) error
 
+	// SeekHead seeks to the beginning of the journal
+	SeekHead() error
+
 	// SeekTail seeks to the end of the journal
 	SeekTail() error
 }
