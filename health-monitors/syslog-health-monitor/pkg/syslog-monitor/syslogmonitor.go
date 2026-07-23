@@ -271,6 +271,13 @@ func (sm *SyslogMonitor) Run() error {
 		return jointError
 	}
 
+	// All checks completed successfully. Clear the post-reboot flag so
+	// subsequent cycles use normal cursor-based processing.
+	if sm.postRebootInit {
+		sm.postRebootInit = false
+		slog.Info("Post-reboot boot-start scan completed; resuming cursor-based processing")
+	}
+
 	slog.Info("Syslog monitor run cycle completed successfully.")
 
 	return nil
@@ -757,6 +764,10 @@ func (sm *SyslogMonitor) processJournalEntries(journal Journal, check CheckDefin
 	slog.Info("Boot ID for check", "check", check.Name, "bootID", bootID)
 
 	if !hasLastCursor {
+		if sm.postRebootInit {
+			return sm.initializeJournalFromBootStart(journal, check)
+		}
+
 		return sm.initializeJournalFromTail(journal, check)
 	}
 
@@ -1070,6 +1081,54 @@ func (sm *SyslogMonitor) initializeJournalFromTail(journal Journal, check CheckD
 	sm.checkLastCursors[check.Name] = cursor
 
 	return nil
+}
+
+// initializeJournalFromBootStart seeks to the beginning of the current boot's
+// journal and processes all entries forward. Used after a boot-ID change when
+// persisted cursors have been cleared: unlike initializeJournalFromTail (which
+// skips everything before the tail), this ensures entries emitted between boot
+// and monitor startup are not missed.
+//
+// A boot filter (_BOOT_ID=<current>) is applied explicitly so that only entries
+// from the current boot are read, even though SeekHead positions at the very
+// beginning of the journal.
+func (sm *SyslogMonitor) initializeJournalFromBootStart(journal Journal, check CheckDefinition) error {
+	slog.Info("Post-reboot: seeking to boot start to process pre-startup entries", "check", check.Name)
+
+	if err := sm.configureBootFilter(journal, check.Name); err != nil {
+		return fmt.Errorf("check '%s': failed to configure boot filter for post-reboot scan: %w", check.Name, err)
+	}
+
+	if err := journal.SeekHead(); err != nil {
+		return fmt.Errorf("check '%s': failed to seek to journal head for post-reboot scan: %w", check.Name, err)
+	}
+
+	// Advance to the first matching entry (journal.Next respects match filters).
+	advanced, err := journal.Next()
+	if err != nil && !errors.Is(err, io.EOF) {
+		return fmt.Errorf("check '%s': error advancing from journal head: %w", check.Name, err)
+	}
+
+	if errors.Is(err, io.EOF) || advanced == 0 {
+		slog.Info("Post-reboot: no journal entries found for current boot", "check", check.Name)
+
+		// No entries yet; save a tail cursor so the next cycle starts fresh.
+		if errSeekTail := journal.SeekTail(); errSeekTail != nil {
+			return fmt.Errorf("check '%s': failed to seek to tail after empty boot scan: %w", check.Name, errSeekTail)
+		}
+
+		cursor, errGetCursor := journal.GetCursor()
+		if errGetCursor != nil {
+			return fmt.Errorf("check '%s': failed to get cursor after empty boot scan: %w", check.Name, errGetCursor)
+		}
+
+		sm.checkLastCursors[check.Name] = cursor
+
+		return nil
+	}
+
+	// Process all entries from boot start forward.
+	return sm.processAllEntries(journal, check)
 }
 
 // getJournalMessage attempts to read a message from the journal with retry logic
