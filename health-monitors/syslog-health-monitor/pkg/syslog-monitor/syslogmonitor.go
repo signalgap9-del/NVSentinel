@@ -1113,19 +1113,9 @@ func (sm *SyslogMonitor) initializeJournalFromBootStart(journal Journal, check C
 	if errors.Is(err, io.EOF) || advanced == 0 {
 		slog.Info("Post-reboot: no journal entries found for current boot", "check", check.Name)
 
-		// No entries yet; save a tail cursor so the next cycle starts fresh.
-		if errSeekTail := journal.SeekTail(); errSeekTail != nil {
-			return fmt.Errorf("check '%s': failed to seek to tail after empty boot scan: %w", check.Name, errSeekTail)
-		}
-
-		cursor, errGetCursor := journal.GetCursor()
-		if errGetCursor != nil {
-			return fmt.Errorf("check '%s': failed to get cursor after empty boot scan: %w", check.Name, errGetCursor)
-		}
-
-		sm.checkLastCursors[check.Name] = cursor
-
-		return nil
+		// No entries yet; fall back to tail initialization so the next
+		// cycle starts fresh (same as first-install behavior).
+		return sm.initializeJournalFromTail(journal, check)
 	}
 
 	// Process all entries from boot start forward.
